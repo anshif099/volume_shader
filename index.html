@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Volume Shader Test (Mobile • Mali G720+)</title>
+<style>
+  :root { --bg:#0b0d10; --fg:#e8eef6; --muted:#98a2b3; --accent:#7dd3fc; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font-family:system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif; }
+  #wrap { position:fixed; inset:0; display:grid; grid-template-rows:auto 1fr auto; }
+  header, footer { padding:8px 10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:rgba(255,255,255,0.03); border-bottom:1px solid rgba(255,255,255,0.06); }
+  footer { border-top:1px solid rgba(255,255,255,0.06); border-bottom:none; }
+  #gpu { color:var(--muted); font-size:12px; }
+  #fps { font-variant-numeric:tabular-nums; padding:2px 8px; border-radius:10px; background:rgba(125,211,252,.12); }
+  #canvas { width:100%; height:100%; display:block; touch-action:none; }
+  .ctrl { display:flex; align-items:center; gap:8px; font-size:13px; }
+  input[type="range"] { width:140px; }
+  .badge { padding:2px 8px; border-radius:999px; background:rgba(255,255,255,0.06); font-size:12px; }
+  button, select, input, label { color:var(--fg); }
+  button { background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.1); border-radius:10px; padding:6px 10px; cursor:pointer; }
+  button:active { transform:translateY(1px); }
+  a { color:var(--accent); text-decoration:none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <header>
+    <div class="badge">Volume Shader Test</div>
+    <div id="fps">FPS: --</div>
+    <div id="gpu">GPU: detecting…</div>
+  </header>
+
+  <canvas id="canvas"></canvas>
+
+  <footer>
+    <div class="ctrl">
+      <label>Steps: <span id="stepsVal">96</span></label>
+      <input id="steps" type="range" min="32" max="256" step="1" value="96">
+    </div>
+    <div class="ctrl">
+      <label>Resolution Scale: <span id="resVal">0.90</span></label>
+      <input id="res" type="range" min="0.50" max="1.00" step="0.01" value="0.90">
+    </div>
+    <div class="ctrl">
+      <label><input id="pause" type="checkbox"> Pause</label>
+    </div>
+    <div class="ctrl">
+      <label><input id="dres" type="checkbox" checked> Dynamic Res</label>
+    </div>
+    <div class="ctrl">
+      <button id="hq">HQ Boost</button>
+      <button id="lq">LQ Safe</button>
+      <span class="badge">Drag to orbit • Pinch to zoom</span>
+    </div>
+  </footer>
+</div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('canvas');
+  const gl = canvas.getContext('webgl2', { antialias:false, preserveDrawingBuffer:false });
+  if (!gl) {
+    alert('WebGL2 not supported. Try a newer browser.');
+    return;
+  }
+
+  // UI elements
+  const fpsEl = document.getElementById('fps');
+  const gpuEl = document.getElementById('gpu');
+  const stepsEl = document.getElementById('steps');
+  const stepsVal = document.getElementById('stepsVal');
+  const resEl = document.getElementById('res');
+  const resVal = document.getElementById('resVal');
+  const pauseEl = document.getElementById('pause');
+  const dresEl = document.getElementById('dres');
+  const hqBtn = document.getElementById('hq');
+  const lqBtn = document.getElementById('lq');
+
+  // Detect GPU renderer
+  let renderer = 'Unknown';
+  try {
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    if (ext) {
+      renderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+    } else {
+      renderer = gl.getParameter(gl.RENDERER);
+    }
+  } catch(e){}
+  gpuEl.textContent = 'GPU: ' + renderer;
+
+  // Auto quality based on GPU name
+  const renLow = /mali|adreno|powervr|apple/i.test(renderer);
+  const isG7xx = /Mali-(G7\d\d|G72\d|G710|G715|G720)/i.test(renderer);
+  if (isG7xx) {
+    stepsEl.value = 96; stepsVal.textContent = '96';
+    resEl.value = 0.90; resVal.textContent = '0.90';
+  } else {
+    stepsEl.value = 72; stepsVal.textContent = '72';
+    resEl.value = 0.80; resVal.textContent = '0.80';
+  }
+
+  // Resize handling with resolution scale
+  let pixelRatio = Math.min(2, (window.devicePixelRatio || 1));
+  function resize() {
+    const scale = parseFloat(resEl.value);
+    const w = Math.floor(window.innerWidth * scale);
+    const h = Math.floor(window.innerHeight * scale);
+    canvas.width = Math.max(1, Math.floor(w * pixelRatio));
+    canvas.height = Math.max(1, Math.floor(h * pixelRatio));
+    canvas.style.width = window.innerWidth + 'px';
+    canvas.style.height = window.innerHeight + 'px';
+    gl.viewport(0, 0, canvas.width, canvas.height);
+  }
+  window.addEventListener('resize', resize, { passive:true });
+
+  // Shaders (compact, fbm-based density)
+  const vs = `#version 300 es
+  precision highp float;
+  const vec2 verts[3]=vec2[3](vec2(-1.,-1.),vec2(3.,-1.),vec2(-1.,3.));
+  out vec2 vUV;
+  void main(){
+    vec2 p = verts[gl_VertexID];
+    vUV = p;
+    gl_Position = vec4(p*2.-1.,0.,1.);
+  }`;
+
+  const fs = `#version 300 es
+  precision highp float;
+  out vec4 fragColor;
+  in vec2 vUV;
+  uniform vec2 uRes;
+  uniform float uTime;
+  uniform int uSteps;
+  uniform vec3 uCamPos;
+  uniform mat3 uCamRot;
+
+  // Hash & noise (cheap)
+  float hash(vec3 p){ p = fract(p*0.3183099+vec3(0.1,0.2,0.3)); p *= 17.0; return fract(p.x*p.y*p.z*(p.x+p.y+p.z)); }
+  float noise(vec3 p){
+    vec3 i=floor(p), f=fract(p);
+    float n=0.0;
+    for(int z=0;z<2;z++)
+    for(int y=0;y<2;y++)
+    for(int x=0;x<2;x++){
+      vec3 g=vec3(float(x),float(y),float(z));
+      float w = dot(smoothstep(vec3(0.0),vec3(1.0),f), 
+                    mix(mix(vec3(1.0-f.x,1.0-f.y,1.0-f.z), vec3(f.x,1.0-f.y,1.0-f.z), g.x),
+                        mix(vec3(1.0-f.x,f.y,1.0-f.z),     vec3(f.x,f.y,1.0-f.z),     g.x), g.y));
+      n += hash(i+g) * w;
+    }
+    return n;
+  }
+  float fbm(vec3 p){
+    float a=0.5, s=0.0;
+    for(int i=0;i<4;i++){
+      s += a*noise(p); p = p*2.02 + 0.3; a*=0.5;
+    }
+    return s;
+  }
+
+  // Scene density: animated cloud inside sphere
+  float density(vec3 p){
+    float r = length(p);
+    float shell = smoothstep(1.2, 0.9, r); // fade near radius ~1.0
+    float n = fbm(p*1.2 + vec3(0.0, uTime*0.08, 0.0));
+    n = pow(n, 1.5);
+    return shell * n * 1.3;
+  }
+
+  // Ray-sphere intersection
+  bool sphereHit(vec3 ro, vec3 rd, float R, out float t0, out float t1){
+    float b = dot(ro, rd);
+    float c = dot(ro, ro) - R*R;
+    float h = b*b - c;
+    if (h < 0.0) return false;
+    h = sqrt(h);
+    t0 = -b - h; t1 = -b + h;
+    return true;
+  }
+
+  void main(){
+    vec2 uv = (gl_FragCoord.xy / uRes - 0.5) * vec2(uRes.x/uRes.y, 1.0);
+    vec3 rd = normalize(uCamRot * normalize(vec3(uv, -1.0)));
+    vec3 ro = uCamPos;
+
+    float t0, t1;
+    if(!sphereHit(ro, rd, 1.3, t0, t1)){ discard; }
+
+    t0 = max(t0, 0.0);
+    float t = t0;
+    float dt = (t1 - t0) / float(uSteps);
+
+    vec3 col = vec3(0.0);
+    float alpha = 0.0;
+
+    // Single-scattering-ish integration
+    for(int i=0;i<1024;i++){
+      if(i>=uSteps) break;
+      vec3 p = ro + rd * t;
+      float d = density(p);
+      // Beer-Lambert approx
+      float k = 0.06;               // absorption
+      float s = d * 0.35;           // scattering
+      float a = 1.0 - exp(-k * d);  // opacity from local density
+
+      // Light dir & shading
+      vec3 L = normalize(vec3(0.7, 0.4, -0.6));
+      float l = 0.5 + 0.5*dot(L, normalize(p + 1e-3));
+      vec3 c = mix(vec3(0.4,0.6,0.95), vec3(0.9,0.8,0.6), l) * s;
+
+      col   += (1.0 - alpha) * c * a;
+      alpha += (1.0 - alpha) * a;
+
+      if(alpha > 0.98) break;
+      t += dt;
+    }
+
+    // Simple exposure
+    vec3 tonemapped = col / (1.0 + col);
+    fragColor = vec4(pow(tonemapped, vec3(0.4545)), 1.0);
+  }`;
+
+  function compile(type, src) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.error(gl.getShaderInfoLog(sh));
+      throw new Error('Shader compile error');
+    }
+    return sh;
+  }
+  const prog = gl.createProgram();
+  gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(prog));
+    throw new Error('Program link error');
+  }
+  gl.useProgram(prog);
+
+  // Uniform locations
+  const uRes     = gl.getUniformLocation(prog, 'uRes');
+  const uTime    = gl.getUniformLocation(prog, 'uTime');
+  const uSteps   = gl.getUniformLocation(prog, 'uSteps');
+  const uCamPos  = gl.getUniformLocation(prog, 'uCamPos');
+  const uCamRot  = gl.getUniformLocation(prog, 'uCamRot');
+
+  // Fullscreen triangle
+  const vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  // Camera state
+  let yaw = 0.6, pitch = 0.3, dist = 2.6;
+  let dragging = false, px=0, py=0;
+  let pinchBase = 0;
+  canvas.addEventListener('pointerdown', e => { dragging=true; px=e.clientX; py=e.clientY; canvas.setPointerCapture(e.pointerId); });
+  canvas.addEventListener('pointerup',   e => { dragging=false; canvas.releasePointerCapture(e.pointerId); });
+  canvas.addEventListener('pointermove', e => {
+    if (!dragging) return;
+    const dx = (e.clientX - px) / Math.max(1, canvas.clientWidth);
+    const dy = (e.clientY - py) / Math.max(1, canvas.clientHeight);
+    yaw   += dx * Math.PI;
+    pitch += dy * Math.PI * 0.5;
+    pitch = Math.max(-1.2, Math.min(1.2, pitch));
+    px = e.clientX; py = e.clientY;
+  }, { passive:true });
+
+  // Pinch zoom (basic)
+  let touches = new Map();
+  canvas.addEventListener('touchstart', e => {
+    for (const t of e.changedTouches) touches.set(t.identifier, t);
+    if (touches.size === 2) {
+      const [a,b] = [...touches.values()];
+      pinchBase = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+    }
+  }, { passive:true });
+  canvas.addEventListener('touchmove', e => {
+    for (const t of e.changedTouches) touches.set(t.identifier, t);
+    if (touches.size === 2) {
+      const [a,b] = [...touches.values()];
+      const d = Math.hypot(a.clientX-b.clientX, a.clientY-b.clientY);
+      const delta = (pinchBase - d)/200.0;
+      dist = Math.max(1.6, Math.min(5.0, dist + delta));
+      pinchBase = d;
+    }
+  }, { passive:true });
+  canvas.addEventListener('touchend', e => {
+    for (const t of e.changedTouches) touches.delete(t.identifier);
+  });
+
+  // UI events
+  stepsEl.addEventListener('input', () => stepsVal.textContent = stepsEl.value);
+  resEl.addEventListener('input', () => { resVal.textContent = Number(resEl.value).toFixed(2); resize(); });
+
+  hqBtn.addEventListener('click', () => {
+    stepsEl.value = Math.min(160, Math.max(96, parseInt(stepsEl.value)));
+    stepsVal.textContent = stepsEl.value;
+    resEl.value = Math.max(0.90, parseFloat(resEl.value));
+    resVal.textContent = Number(resEl.value).toFixed(2);
+    resize();
+  });
+  lqBtn.addEventListener('click', () => {
+    stepsEl.value = 64; stepsVal.textContent = '64';
+    resEl.value = 0.75; resVal.textContent = '0.75';
+    resize();
+  });
+
+  // Animation / timing
+  let t0 = performance.now();
+  let paused = false;
+  pauseEl.addEventListener('change', () => paused = pauseEl.checked);
+
+  // FPS measure (EMA)
+  let ema = null;
+  function updateFPS(dt){
+    const fps = 1000 / dt;
+    ema = (ema === null) ? fps : (ema*0.9 + fps*0.1);
+    fpsEl.textContent = 'FPS: ' + (ema).toFixed(1);
+  }
+
+  // Dynamic resolution safety: if fps drops < 40, gently drop scale; if > 58, raise a bit
+  function autoDynamicRes(){
+    if (!dresEl.checked) return;
+    if (ema === null) return;
+    let scale = parseFloat(resEl.value);
+    if (ema < 40 && scale > 0.6) { scale = Math.max(0.6, scale - 0.02); resEl.value = scale.toFixed(2); resVal.textContent = resEl.value; resize(); }
+    else if (ema > 58 && scale < 1.0) { scale = Math.min(1.0, scale + 0.01); resEl.value = scale.toFixed(2); resVal.textContent = resEl.value; resize(); }
+  }
+
+  // Matrix helpers
+  function camMatrix(yaw, pitch){
+    const cy=Math.cos(yaw), sy=Math.sin(yaw);
+    const cp=Math.cos(pitch), sp=Math.sin(pitch);
+    // Yaw (y-axis), then Pitch (x-axis)
+    const R = [
+      cy, 0, -sy,
+      sy*sp, cp, cy*sp,
+      sy*cp, -sp, cy*cp
+    ];
+    return R;
+  }
+
+  // Initial size
+  resize();
+
+  // Render loop
+  function frame(now){
+    const dt = now - t0; t0 = now;
+    if (!paused){
+      const time = now * 0.001;
+
+      // Camera
+      const R = camMatrix(yaw, pitch);
+      const camDir = [-R[2], -R[5], -R[8]]; // forward
+      const camPos = [ R[2]*dist, R[5]*dist, R[8]*dist ]; // back along forward
+
+      gl.useProgram(prog);
+      gl.uniform2f(uRes, canvas.width, canvas.height);
+      gl.uniform1f(uTime, time);
+      gl.uniform1i(uSteps, parseInt(stepsEl.value));
+      gl.uniform3f(uCamPos, camPos[0], camPos[1], camPos[2]);
+      gl.uniformMatrix3fv(uCamRot, false, new Float32Array(R));
+
+      gl.bindVertexArray(vao);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+    }
+
+    updateFPS(dt);
+    autoDynamicRes();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
