@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
-<title>Fractal Volume Shader • Touch Rotate</title>
+<title>Fractal Volume Shader • Touch Rotate Fixed</title>
 <style>
   html,body{
     margin:0;
@@ -19,7 +19,7 @@
     height:min(95vmin,900px);
     display:block;
     border-radius:12px;
-    touch-action:none; /* disables scroll/zoom gesture */
+    touch-action:none; /* disable browser gestures */
   }
   #fps{
     position:fixed;
@@ -77,7 +77,6 @@ uniform float uTime;
 uniform float uYaw;
 uniform float uPitch;
 
-// rainbow palette
 vec3 palette(float t){
   return 0.5+0.5*cos(6.2831*(vec3(0.0,0.33,0.67)+t*vec3(1.0)));
 }
@@ -186,49 +185,32 @@ const uYaw=gl.getUniformLocation(prog,"uYaw");
 const uPitch=gl.getUniformLocation(prog,"uPitch");
 gl.bindVertexArray(gl.createVertexArray());
 
-// --- rotation state ---
+// rotation state
 let yaw=0, pitch=0;
 let dragging=false, startX=0, startY=0;
 
-// desktop mouse
+// pointer (mouse/touch unified)
 canvas.addEventListener("pointerdown",e=>{
-  dragging=true; startX=e.clientX; startY=e.clientY; canvas.setPointerCapture(e.pointerId);
+  dragging=true;
+  startX=e.clientX;
+  startY=e.clientY;
+  canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove",e=>{
   if(!dragging)return;
   const dx=(e.clientX-startX)/canvas.clientWidth;
   const dy=(e.clientY-startY)/canvas.clientHeight;
-  yaw+=dx*3.14;
+  // FIXED: reverse horizontal rotation direction
+  yaw-=dx*3.14;
   pitch+=dy*1.5;
   pitch=Math.max(-1.2,Math.min(1.2,pitch));
-  startX=e.clientX; startY=e.clientY;
+  startX=e.clientX;
+  startY=e.clientY;
 });
-canvas.addEventListener("pointerup",()=>{dragging=false;});
-
-// mobile touch
-let touchActive=false;
-canvas.addEventListener("touchstart",e=>{
-  if(e.touches.length===1){
-    touchActive=true;
-    startX=e.touches[0].clientX;
-    startY=e.touches[0].clientY;
-  }
-},{passive:false});
-
-canvas.addEventListener("touchmove",e=>{
-  if(!touchActive)return;
-  const t=e.touches[0];
-  const dx=(t.clientX-startX)/canvas.clientWidth;
-  const dy=(t.clientY-startY)/canvas.clientHeight;
-  yaw+=dx*3.14;
-  pitch+=dy*1.5;
-  pitch=Math.max(-1.2,Math.min(1.2,pitch));
-  startX=t.clientX;
-  startY=t.clientY;
-  e.preventDefault();
-},{passive:false});
-
-canvas.addEventListener("touchend",()=>{touchActive=false;});
+canvas.addEventListener("pointerup",e=>{
+  dragging=false;
+  canvas.releasePointerCapture(e.pointerId);
+});
 
 window.addEventListener("wheel",e=>e.preventDefault(),{passive:false});
 
