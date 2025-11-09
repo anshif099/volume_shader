@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>Interactive 360° Fractal Volume Shader</title>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
+<title>Fractal Volume Shader • Touch Rotate</title>
 <style>
   html,body{
     margin:0;
@@ -19,6 +19,7 @@
     height:min(95vmin,900px);
     display:block;
     border-radius:12px;
+    touch-action:none; /* disables scroll/zoom gesture */
   }
   #fps{
     position:fixed;
@@ -46,7 +47,7 @@
 <body>
 <canvas id="canvas"></canvas>
 <div id="fps">FPS: --</div>
-<div class="hint">Drag to rotate • Auto spins 360°</div>
+<div class="hint">Touch or drag to rotate • Auto spins 360°</div>
 
 <script>
 const canvas=document.getElementById("canvas");
@@ -76,12 +77,11 @@ uniform float uTime;
 uniform float uYaw;
 uniform float uPitch;
 
-// rainbow color palette
+// rainbow palette
 vec3 palette(float t){
   return 0.5+0.5*cos(6.2831*(vec3(0.0,0.33,0.67)+t*vec3(1.0)));
 }
 
-// Mandelbulb distance estimator
 float mandelbulb(vec3 p,out float trap){
   vec3 z=p;
   float dr=1.0;
@@ -96,8 +96,7 @@ float mandelbulb(vec3 p,out float trap){
     float phi=atan(z.y,z.x);
     float zr=pow(r,power);
     dr=pow(r,power-1.0)*power*dr+1.0;
-    theta*=power;
-    phi*=power;
+    theta*=power; phi*=power;
     z=zr*vec3(sin(theta)*cos(phi),sin(theta)*sin(phi),cos(theta));
     z+=p;
   }
@@ -120,8 +119,6 @@ void main(){
   uv.x*=uRes.x/uRes.y;
 
   float time=uTime*0.3;
-
-  // camera rotation with user input + auto spin
   float yaw=uYaw + time;
   float pitch=uPitch;
 
@@ -140,10 +137,7 @@ void main(){
   vec3 ro=cam*vec3(0.,0.,2.6);
   vec3 rd=normalize(cam*normalize(vec3(uv,-1.4)));
 
-  // raymarch
-  float t=0.0;
-  vec3 p; float trap;
-  bool hit=false;
+  float t=0.0; vec3 p; float trap; bool hit=false;
   for(int i=0;i<120;i++){
     p=ro+rd*t;
     float d=mandelbulb(p,trap);
@@ -192,30 +186,53 @@ const uYaw=gl.getUniformLocation(prog,"uYaw");
 const uPitch=gl.getUniformLocation(prog,"uPitch");
 gl.bindVertexArray(gl.createVertexArray());
 
-// --- Camera rotation state ---
-let yaw=0.0, pitch=0.0;
-let dragging=false, px=0, py=0;
+// --- rotation state ---
+let yaw=0, pitch=0;
+let dragging=false, startX=0, startY=0;
+
+// desktop mouse
 canvas.addEventListener("pointerdown",e=>{
-  dragging=true; px=e.clientX; py=e.clientY; canvas.setPointerCapture(e.pointerId);
-});
-canvas.addEventListener("pointerup",e=>{
-  dragging=false; canvas.releasePointerCapture(e.pointerId);
+  dragging=true; startX=e.clientX; startY=e.clientY; canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove",e=>{
   if(!dragging)return;
-  const dx=(e.clientX-px)/canvas.clientWidth;
-  const dy=(e.clientY-py)/canvas.clientHeight;
-  yaw+=dx*3.1415;
+  const dx=(e.clientX-startX)/canvas.clientWidth;
+  const dy=(e.clientY-startY)/canvas.clientHeight;
+  yaw+=dx*3.14;
   pitch+=dy*1.5;
   pitch=Math.max(-1.2,Math.min(1.2,pitch));
-  px=e.clientX; py=e.clientY;
-},{passive:true});
+  startX=e.clientX; startY=e.clientY;
+});
+canvas.addEventListener("pointerup",()=>{dragging=false;});
 
-// disable scroll zoom
+// mobile touch
+let touchActive=false;
+canvas.addEventListener("touchstart",e=>{
+  if(e.touches.length===1){
+    touchActive=true;
+    startX=e.touches[0].clientX;
+    startY=e.touches[0].clientY;
+  }
+},{passive:false});
+
+canvas.addEventListener("touchmove",e=>{
+  if(!touchActive)return;
+  const t=e.touches[0];
+  const dx=(t.clientX-startX)/canvas.clientWidth;
+  const dy=(t.clientY-startY)/canvas.clientHeight;
+  yaw+=dx*3.14;
+  pitch+=dy*1.5;
+  pitch=Math.max(-1.2,Math.min(1.2,pitch));
+  startX=t.clientX;
+  startY=t.clientY;
+  e.preventDefault();
+},{passive:false});
+
+canvas.addEventListener("touchend",()=>{touchActive=false;});
+
 window.addEventListener("wheel",e=>e.preventDefault(),{passive:false});
 
-let last=performance.now();
-let ema=null;
+let last=performance.now(); let ema=null;
 function loop(now){
   const dt=now-last; last=now;
   const fps=1000/dt; ema=ema?ema*0.9+fps*0.1:fps;
