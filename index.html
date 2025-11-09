@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
-<title>Fractal Volume Shader • Touch Rotate Fixed</title>
+<title>Fractal Volume Shader • GPU Detector</title>
 <style>
   html,body{
     margin:0;
@@ -19,11 +19,10 @@
     height:min(95vmin,900px);
     display:block;
     border-radius:12px;
-    touch-action:none; /* disable browser gestures */
+    touch-action:none;
   }
-  #fps{
+  #gpu,#fps{
     position:fixed;
-    bottom:10px;
     left:50%;
     transform:translateX(-50%);
     color:#fff;
@@ -33,9 +32,11 @@
     padding:4px 8px;
     border-radius:8px;
   }
+  #gpu{ top:10px; }
+  #fps{ bottom:10px; }
   .hint{
     position:fixed;
-    top:10px;
+    top:35px;
     left:50%;
     transform:translateX(-50%);
     color:#aaa;
@@ -46,8 +47,9 @@
 </head>
 <body>
 <canvas id="canvas"></canvas>
-<div id="fps">FPS: --</div>
+<div id="gpu">GPU: Detecting...</div>
 <div class="hint">Touch or drag to rotate • Auto spins 360°</div>
+<div id="fps">FPS: --</div>
 
 <script>
 const canvas=document.getElementById("canvas");
@@ -64,6 +66,21 @@ function resize(){
 window.addEventListener("resize",resize);
 resize();
 
+// ---- GPU DETECTION ----
+(function detectGPU(){
+  let gpuName="Unknown";
+  try{
+    const ext=gl.getExtension("WEBGL_debug_renderer_info");
+    if(ext){
+      gpuName=gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+    } else {
+      gpuName=gl.getParameter(gl.RENDERER);
+    }
+  }catch(e){}
+  document.getElementById("gpu").textContent="GPU: "+gpuName;
+})();
+
+// ---- SHADERS ----
 const vs=`#version 300 es
 const vec2 pos[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
 void main(){gl_Position=vec4(pos[gl_VertexID],0,1);}
@@ -185,27 +202,25 @@ const uYaw=gl.getUniformLocation(prog,"uYaw");
 const uPitch=gl.getUniformLocation(prog,"uPitch");
 gl.bindVertexArray(gl.createVertexArray());
 
-// rotation state
+// --- rotation state ---
 let yaw=0, pitch=0;
 let dragging=false, startX=0, startY=0;
 
-// pointer (mouse/touch unified)
+// mouse/touch combined
 canvas.addEventListener("pointerdown",e=>{
   dragging=true;
-  startX=e.clientX;
-  startY=e.clientY;
+  startX=e.clientX; startY=e.clientY;
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove",e=>{
   if(!dragging)return;
   const dx=(e.clientX-startX)/canvas.clientWidth;
   const dy=(e.clientY-startY)/canvas.clientHeight;
-  // FIXED: reverse horizontal rotation direction
+  // correct direction
   yaw-=dx*3.14;
   pitch+=dy*1.5;
   pitch=Math.max(-1.2,Math.min(1.2,pitch));
-  startX=e.clientX;
-  startY=e.clientY;
+  startX=e.clientX; startY=e.clientY;
 });
 canvas.addEventListener("pointerup",e=>{
   dragging=false;
@@ -214,7 +229,8 @@ canvas.addEventListener("pointerup",e=>{
 
 window.addEventListener("wheel",e=>e.preventDefault(),{passive:false});
 
-let last=performance.now(); let ema=null;
+// --- render loop ---
+let last=performance.now(), ema=null;
 function loop(now){
   const dt=now-last; last=now;
   const fps=1000/dt; ema=ema?ema*0.9+fps*0.1:fps;
