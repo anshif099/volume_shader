@@ -3,20 +3,20 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-<title>360° Fractal Volume Shader</title>
+<title>Interactive 360° Fractal Volume Shader</title>
 <style>
   html,body{
     margin:0;
     height:100%;
     background:#000;
-    overflow:hidden;
     display:flex;
     align-items:center;
     justify-content:center;
+    overflow:hidden;
   }
   canvas{
-    width:min(95vmin,800px);
-    height:min(95vmin,800px);
+    width:min(95vmin,900px);
+    height:min(95vmin,900px);
     display:block;
     border-radius:12px;
   }
@@ -32,11 +32,21 @@
     padding:4px 8px;
     border-radius:8px;
   }
+  .hint{
+    position:fixed;
+    top:10px;
+    left:50%;
+    transform:translateX(-50%);
+    color:#aaa;
+    font-family:sans-serif;
+    font-size:13px;
+  }
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
 <div id="fps">FPS: --</div>
+<div class="hint">Drag to rotate • Auto spins 360°</div>
 
 <script>
 const canvas=document.getElementById("canvas");
@@ -63,6 +73,8 @@ precision highp float;
 out vec4 fragColor;
 uniform vec2 uRes;
 uniform float uTime;
+uniform float uYaw;
+uniform float uPitch;
 
 // rainbow color palette
 vec3 palette(float t){
@@ -109,9 +121,9 @@ void main(){
 
   float time=uTime*0.3;
 
-  // camera rotation (full 360° spin)
-  float yaw=time;
-  float pitch=sin(time*0.7)*0.5;
+  // camera rotation with user input + auto spin
+  float yaw=uYaw + time;
+  float pitch=uPitch;
 
   mat3 rotY=mat3(
     cos(yaw),0.,-sin(yaw),
@@ -176,19 +188,45 @@ gl.useProgram(prog);
 
 const uRes=gl.getUniformLocation(prog,"uRes");
 const uTime=gl.getUniformLocation(prog,"uTime");
+const uYaw=gl.getUniformLocation(prog,"uYaw");
+const uPitch=gl.getUniformLocation(prog,"uPitch");
 gl.bindVertexArray(gl.createVertexArray());
 
+// --- Camera rotation state ---
+let yaw=0.0, pitch=0.0;
+let dragging=false, px=0, py=0;
+canvas.addEventListener("pointerdown",e=>{
+  dragging=true; px=e.clientX; py=e.clientY; canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointerup",e=>{
+  dragging=false; canvas.releasePointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove",e=>{
+  if(!dragging)return;
+  const dx=(e.clientX-px)/canvas.clientWidth;
+  const dy=(e.clientY-py)/canvas.clientHeight;
+  yaw+=dx*3.1415;
+  pitch+=dy*1.5;
+  pitch=Math.max(-1.2,Math.min(1.2,pitch));
+  px=e.clientX; py=e.clientY;
+},{passive:true});
+
+// disable scroll zoom
+window.addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+
 let last=performance.now();
-let fps=0,ema=null;
+let ema=null;
 function loop(now){
   const dt=now-last; last=now;
-  fps=1000/dt; ema=ema?ema*0.9+fps*0.1:fps;
+  const fps=1000/dt; ema=ema?ema*0.9+fps*0.1:fps;
   document.getElementById("fps").textContent="FPS: "+ema.toFixed(1);
 
   gl.uniform2f(uRes,canvas.width,canvas.height);
   gl.uniform1f(uTime,now*0.001);
-  gl.drawArrays(gl.TRIANGLES,0,3);
+  gl.uniform1f(uYaw,yaw);
+  gl.uniform1f(uPitch,pitch);
 
+  gl.drawArrays(gl.TRIANGLES,0,3);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
