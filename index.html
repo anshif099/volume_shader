@@ -3,139 +3,126 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no"/>
-<title>Fractal Volume Shader • GPU Detector</title>
+<title>Fractal Volume • POCO X7 Pro (Mali-G720 Only)</title>
 <style>
   html,body{
-    margin:0;
-    height:100%;
-    background:#000;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    overflow:hidden;
+    margin:0; height:100%; background:#000; overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
   }
   canvas{
-    width:min(95vmin,900px);
-    height:min(95vmin,900px);
-    display:block;
-    border-radius:12px;
-    touch-action:none;
+    width:min(95vmin,900px); height:min(95vmin,900px);
+    display:block; border-radius:12px; touch-action:none;
   }
-  #gpu,#fps{
-    position:fixed;
-    left:50%;
-    transform:translateX(-50%);
-    color:#fff;
-    font-family:monospace;
-    font-size:13px;
-    background:rgba(0,0,0,0.4);
-    padding:4px 8px;
-    border-radius:8px;
+  .badge{
+    position:fixed; left:50%; transform:translateX(-50%);
+    font-family:system-ui, -apple-system, Segoe UI, Roboto, Inter, sans-serif;
+    font-size:12px; color:#fff; background:rgba(0,0,0,.45);
+    padding:6px 10px; border-radius:999px; white-space:nowrap;
+    border:1px solid rgba(255,255,255,.12); backdrop-filter:blur(6px);
   }
-  #gpu{ top:10px; }
-  #fps{ bottom:10px; }
-  .hint{
-    position:fixed;
-    top:35px;
-    left:50%;
-    transform:translateX(-50%);
-    color:#aaa;
-    font-family:sans-serif;
-    font-size:13px;
-  }
+  #gpu { top:10px; }
+  #fps { bottom:10px; font-family:monospace; }
+  #hint{ top:40px; color:#9aa; border-color:transparent; }
 </style>
 </head>
 <body>
 <canvas id="canvas"></canvas>
-<div id="gpu">GPU: Detecting...</div>
-<div id="fps">FPS: --</div>
+<div id="gpu" class="badge">GPU: Detecting…</div>
+<div id="hint" class="badge">Touch/drag to rotate • Auto spins • Centered</div>
+<div id="fps" class="badge">FPS: --</div>
 
 <script>
-const canvas=document.getElementById("canvas");
-const gl=canvas.getContext("webgl2",{antialias:false});
-if(!gl){alert("WebGL2 not supported");}
+const canvas = document.getElementById('canvas');
+const gl = canvas.getContext('webgl2', { antialias:false });
+if(!gl){ alert('WebGL2 not supported'); }
 
+/* ---------- Sizing ---------- */
 function resize(){
-  const dpr=Math.min(2,window.devicePixelRatio||1);
-  const size=Math.min(window.innerWidth,window.innerHeight)*0.95;
-  canvas.width=size*dpr;
-  canvas.height=size*dpr;
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  const size = Math.min(window.innerWidth, window.innerHeight)*0.95;
+  canvas.width  = Math.floor(size * dpr);
+  canvas.height = Math.floor(size * dpr);
   gl.viewport(0,0,canvas.width,canvas.height);
 }
-window.addEventListener("resize",resize);
+addEventListener('resize', resize, {passive:true});
 resize();
 
-// ---- GPU DETECTION ----
-(function detectGPU(){
-  let gpuName="Unknown";
-  try{
-    const ext=gl.getExtension("WEBGL_debug_renderer_info");
-    if(ext){
-      gpuName=gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
-    } else {
-      gpuName=gl.getParameter(gl.RENDERER);
-    }
-  }catch(e){}
-  document.getElementById("gpu").textContent="GPU: "+gpuName;
-})();
+/* ---------- GPU Detect ---------- */
+let gpuName = 'Unknown';
+let isMaliG720 = false;
+try{
+  const ext = gl.getExtension('WEBGL_debug_renderer_info');
+  if(ext){
+    gpuName = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+  }else{
+    gpuName = gl.getParameter(gl.RENDERER);
+  }
+}catch(e){}
+document.getElementById('gpu').textContent = 'GPU: ' + gpuName;
 
-// ---- SHADERS ----
-const vs=`#version 300 es
+isMaliG720 = /Mali[- ]?G720/i.test(gpuName);
+
+/* ---------- Shaders ---------- */
+const vs = `#version 300 es
 const vec2 pos[3]=vec2[3](vec2(-1,-1),vec2(3,-1),vec2(-1,3));
-void main(){gl_Position=vec4(pos[gl_VertexID],0,1);}
-`;
+void main(){ gl_Position=vec4(pos[gl_VertexID],0.0,1.0); }`;
 
-const fs=`#version 300 es
+const fs = `#version 300 es
 precision highp float;
 out vec4 fragColor;
 uniform vec2 uRes;
 uniform float uTime;
 uniform float uYaw;
 uniform float uPitch;
+uniform int   uHeavy; // 0 = smooth path (Mali-G720 only), 1 = intentionally heavy path
 
 vec3 palette(float t){
-  return 0.5+0.5*cos(6.2831*(vec3(0.0,0.33,0.67)+t*vec3(1.0)));
+  return 0.5 + 0.5*cos(6.28318*(vec3(0.00,0.33,0.67)+t));
 }
 
-float mandelbulb(vec3 p,out float trap){
+float mandelbulb(vec3 p, out float trap, int heavy){
   vec3 z=p;
   float dr=1.0;
   float r=0.0;
   trap=1e9;
-  const float power=8.0;
-  for(int i=0;i<10;i++){
-    r=length(z);
-    trap=min(trap,r);
-    if(r>2.5)break;
-    float theta=acos(z.z/r);
-    float phi=atan(z.y,z.x);
-    float zr=pow(r,power);
-    dr=pow(r,power-1.0)*power*dr+1.0;
-    theta*=power; phi*=power;
-    z=zr*vec3(sin(theta)*cos(phi),sin(theta)*sin(phi),cos(theta));
-    z+=p;
+  // Heavier iterations & tighter epsilon when heavy==1 (other GPUs)
+  int ITER = (heavy==1) ? 18 : 10;
+  float power = 8.0;
+
+  for(int i=0;i<32;i++){
+    if(i>=ITER) break;
+    r = length(z);
+    trap = min(trap, r);
+    if(r>2.5) break;
+    float theta = acos(z.z/r);
+    float phi   = atan(z.y, z.x);
+    float zr    = pow(r, power);
+    dr = pow(r, power-1.0)*power*dr + 1.0;
+    theta *= power;
+    phi   *= power;
+    z = zr * vec3(sin(theta)*cos(phi), sin(theta)*sin(phi), cos(theta)) + p;
   }
   return 0.5*log(r)*r/dr;
 }
 
-vec3 getNormal(vec3 p){
-  float t; float e=0.0015;
-  vec2 h=vec2(1,-1)*0.5773;
+vec3 getNormal(vec3 p, int heavy){
+  float t; float e = (heavy==1) ? 0.0009 : 0.0015;
+  vec2 h=vec2(1.0,-1.0)*0.5773;
   return normalize(
-    h.xyy*mandelbulb(p+h.xyy*e,t)+
-    h.yyx*mandelbulb(p+h.yyx*e,t)+
-    h.yxy*mandelbulb(p+h.yxy*e,t)+
-    h.xxx*mandelbulb(p+h.xxx*e,t)
+    h.xyy*mandelbulb(p+h.xyy*e,t,heavy)+
+    h.yyx*mandelbulb(p+h.yyx*e,t,heavy)+
+    h.yxy*mandelbulb(p+h.yxy*e,t,heavy)+
+    h.xxx*mandelbulb(p+h.xxx*e,t,heavy)
   );
 }
 
 void main(){
-  vec2 uv=(gl_FragCoord.xy/uRes)*2.0-1.0;
-  uv.x*=uRes.x/uRes.y;
+  vec2 uv = (gl_FragCoord.xy/uRes)*2.0-1.0;
+  uv.x *= uRes.x/uRes.y;
 
-  float time=uTime*0.3;
-  float yaw=uYaw + time;
-  float pitch=uPitch;
+  float time  = uTime*0.3;
+  float yaw   = uYaw + time;
+  float pitch = uPitch;
 
   mat3 rotY=mat3(
     cos(yaw),0.,-sin(yaw),
@@ -147,103 +134,131 @@ void main(){
     0.,cos(pitch),-sin(pitch),
     0.,sin(pitch),cos(pitch)
   );
-  mat3 cam=rotY*rotX;
+  mat3 cam = rotY*rotX;
 
-  vec3 ro=cam*vec3(0.,0.,2.6);
-  vec3 rd=normalize(cam*normalize(vec3(uv,-1.4)));
+  vec3 ro = cam*vec3(0.,0.,2.6);
+  vec3 rd = normalize(cam*normalize(vec3(uv,-1.4)));
 
+  // March
   float t=0.0; vec3 p; float trap; bool hit=false;
-  for(int i=0;i<120;i++){
-    p=ro+rd*t;
-    float d=mandelbulb(p,trap);
-    if(d<0.001){hit=true;break;}
-    if(t>6.0)break;
-    t+=d*0.9;
+  int MAX_STEPS = (uHeavy==1) ? 180 : 120;
+  for(int i=0;i<300;i++){
+    if(i>=MAX_STEPS) break;
+    p = ro + rd*t;
+    float d = mandelbulb(p, trap, uHeavy);
+    float eps = (uHeavy==1) ? 0.0008 : 0.0012;
+    if(d<eps){ hit=true; break; }
+    if(t>6.0) break;
+    t += d * 0.9;
   }
 
-  vec3 col=vec3(0.0);
+  vec3 col = vec3(0.0);
   if(hit){
-    vec3 n=getNormal(p);
-    vec3 l=normalize(vec3(0.6,0.5,-0.7));
-    float diff=max(0.0,dot(n,l));
-    vec3 v=normalize(-rd);
-    float spec=pow(max(dot(reflect(-l,n),v),0.0),32.0);
-    float fog=smoothstep(0.0,6.0,length(p));
-    vec3 base=palette(trap*0.9);
-    col=base*diff*1.2+spec*0.5+base*0.3;
-    col=mix(col,vec3(0.02),fog*0.2);
+    vec3 n = getNormal(p, uHeavy);
+    vec3 l = normalize(vec3(0.6,0.5,-0.7));
+    vec3 v = normalize(-rd);
+    float diff = max(0.0, dot(n,l));
+    float spec = pow(max(dot(reflect(-l,n), v),0.0), 32.0);
+    float fog  = smoothstep(0.0, 6.0, length(p));
+    vec3 base  = palette(trap*0.9);
+    col = base*diff*1.2 + spec*0.5 + base*0.30;
+    col = mix(col, vec3(0.02), fog*0.2);
   }
-  col=pow(col/(1.0+col),vec3(0.4545));
-  fragColor=vec4(col,1.0);
+  col = pow(col/(1.0+col), vec3(0.4545));
+  fragColor = vec4(col,1.0);
 }
 `;
 
+/* ---------- GL Program ---------- */
 function compile(type,src){
-  const sh=gl.createShader(type);
+  const sh = gl.createShader(type);
   gl.shaderSource(sh,src);
   gl.compileShader(sh);
-  if(!gl.getShaderParameter(sh,gl.COMPILE_STATUS))
+  if(!gl.getShaderParameter(sh, gl.COMPILE_STATUS)){
     console.error(gl.getShaderInfoLog(sh));
+  }
   return sh;
 }
-
-const prog=gl.createProgram();
-gl.attachShader(prog,compile(gl.VERTEX_SHADER,vs));
-gl.attachShader(prog,compile(gl.FRAGMENT_SHADER,fs));
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
 gl.linkProgram(prog);
-if(!gl.getProgramParameter(prog,gl.LINK_STATUS))
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
   console.error(gl.getProgramInfoLog(prog));
+}
 gl.useProgram(prog);
 
-const uRes=gl.getUniformLocation(prog,"uRes");
-const uTime=gl.getUniformLocation(prog,"uTime");
-const uYaw=gl.getUniformLocation(prog,"uYaw");
-const uPitch=gl.getUniformLocation(prog,"uPitch");
+const uRes   = gl.getUniformLocation(prog, 'uRes');
+const uTime  = gl.getUniformLocation(prog, 'uTime');
+const uYaw   = gl.getUniformLocation(prog, 'uYaw');
+const uPitch = gl.getUniformLocation(prog, 'uPitch');
+const uHeavy = gl.getUniformLocation(prog, 'uHeavy');
 gl.bindVertexArray(gl.createVertexArray());
 
-// --- rotation state ---
+/* ---------- Interaction (rotate only) ---------- */
 let yaw=0, pitch=0;
-let dragging=false, startX=0, startY=0;
-
-// mouse/touch combined
-canvas.addEventListener("pointerdown",e=>{
-  dragging=true;
-  startX=e.clientX; startY=e.clientY;
-  canvas.setPointerCapture(e.pointerId);
+let dragging=false, sx=0, sy=0;
+canvas.addEventListener('pointerdown', e=>{
+  dragging=true; sx=e.clientX; sy=e.clientY; canvas.setPointerCapture(e.pointerId);
 });
-canvas.addEventListener("pointermove",e=>{
-  if(!dragging)return;
-  const dx=(e.clientX-startX)/canvas.clientWidth;
-  const dy=(e.clientY-startY)/canvas.clientHeight;
-  // correct direction
-  yaw-=dx*3.14;
-  pitch+=dy*1.5;
-  pitch=Math.max(-1.2,Math.min(1.2,pitch));
-  startX=e.clientX; startY=e.clientY;
+canvas.addEventListener('pointermove', e=>{
+  if(!dragging) return;
+  const dx=(e.clientX-sx)/canvas.clientWidth;
+  const dy=(e.clientY-sy)/canvas.clientHeight;
+  // Natural directions (fixed)
+  yaw   -= dx*3.14159;
+  pitch += dy*1.5;
+  pitch = Math.max(-1.2, Math.min(1.2, pitch));
+  sx=e.clientX; sy=e.clientY;
 });
-canvas.addEventListener("pointerup",e=>{
-  dragging=false;
-  canvas.releasePointerCapture(e.pointerId);
+canvas.addEventListener('pointerup', e=>{
+  dragging=false; canvas.releasePointerCapture(e.pointerId);
 });
+addEventListener('wheel', e=>e.preventDefault(), {passive:false});
 
-window.addEventListener("wheel",e=>e.preventDefault(),{passive:false});
+/* ---------- Frame cadence policy ---------- */
+// Personalized performance policy:
+// - Mali-G720: draw EVERY frame (aim 120Hz if the device supports it).
+// - Others: INTENTIONALLY THROTTLED to ~0.5 fps + heavy shader path.
+const HEAVY_MODE = isMaliG720 ? 0 : 1;
+const FRAME_INTERVAL_MS = isMaliG720 ? 0 : 1800; // ~0.55 fps on others
 
-// --- render loop ---
-let last=performance.now(), ema=null;
+/* ---------- Render Loop ---------- */
+let last = performance.now(), acc=0, ema=null;
 function loop(now){
-  const dt=now-last; last=now;
-  const fps=1000/dt; ema=ema?ema*0.9+fps*0.1:fps;
-  document.getElementById("fps").textContent="FPS: "+ema.toFixed(1);
+  const dt = now-last; last=now;
+  acc += dt;
 
-  gl.uniform2f(uRes,canvas.width,canvas.height);
-  gl.uniform1f(uTime,now*0.001);
-  gl.uniform1f(uYaw,yaw);
-  gl.uniform1f(uPitch,pitch);
+  // FPS (actual display update cadence)
+  const fps = 1000/dt; ema = ema ? (ema*0.9 + fps*0.1) : fps;
+  document.getElementById('fps').textContent = 'FPS: ' + (isMaliG720 ? ema.toFixed(1) : '≤ 1 (throttled)');
 
-  gl.drawArrays(gl.TRIANGLES,0,3);
+  // For non-G720, only render when enough time accumulated
+  if (FRAME_INTERVAL_MS===0 || acc >= FRAME_INTERVAL_MS){
+    acc = 0;
+
+    gl.uniform2f(uRes, canvas.width, canvas.height);
+    gl.uniform1f(uTime, now*0.001);
+    gl.uniform1f(uYaw, yaw);
+    gl.uniform1f(uPitch, pitch);
+    gl.uniform1i(uHeavy, HEAVY_MODE);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+  }
+
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
+
+// Cosmetic: label GPU class on top hint
+const hint = document.getElementById('hint');
+if(isMaliG720){
+  hint.textContent = 'POCO X7 Pro • Mali-G720 • 120 FPS target • Touch/drag to rotate';
+  document.getElementById('gpu').style.background = 'rgba(0,128,255,.35)';
+} else {
+  hint.textContent = 'Non-Mali-G720 detected • Intentional performance lock (≤1 FPS)';
+  document.getElementById('gpu').style.background = 'rgba(255,64,64,.35)';
+}
 </script>
 </body>
 </html>
